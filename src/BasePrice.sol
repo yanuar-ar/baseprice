@@ -24,9 +24,21 @@ contract BasePrice {
     int24 public floorUpperTick;
     uint256 public floorTokenId;
 
-    constructor(int24 initialFloorLowerTick, int24 initialFloorUpperTick) {
+    // discovery
+    int24 public discoveryLowerTick;
+    int24 public discoveryUpperTick;
+    uint256 public discoveryTokenId;
+
+    constructor(
+        int24 initialFloorLowerTick,
+        int24 initialFloorUpperTick,
+        int24 initialDiscoveryLowerTick,
+        int24 initialDiscoveryUpperTick
+    ) {
         floorLowerTick = initialFloorLowerTick; // -207240
         floorUpperTick = initialFloorUpperTick; // -207180
+        discoveryLowerTick = initialDiscoveryLowerTick; // -191150
+        discoveryUpperTick = initialDiscoveryUpperTick; // -191140
     }
 
     function mintFloor(uint256 amount) public {
@@ -80,5 +92,58 @@ contract BasePrice {
         (uint256 tokenId,,,) = nonfungiblePositionManager.mint(params);
 
         floorTokenId = tokenId;
+    }
+
+    function mintDiscovery(uint256 amount) public {
+        IERC20(weth).transferFrom(msg.sender, address(this), amount);
+
+        // jika belum ada posisi ya gak perlu collect dan withdraw
+        if (discoveryTokenId != 0) {
+            // collect dulu
+            nonfungiblePositionManager.collect(
+                INonfungiblePositionManager.CollectParams({
+                    tokenId: discoveryTokenId,
+                    recipient: address(this),
+                    amount0Max: type(uint128).max,
+                    amount1Max: type(uint128).max
+                })
+            );
+
+            // withdraw semua
+            (,,,,,,, uint128 liquidity,,,,) = nonfungiblePositionManager.positions(discoveryTokenId);
+
+            nonfungiblePositionManager.decreaseLiquidity(
+                INonfungiblePositionManager.DecreaseLiquidityParams({
+                    tokenId: discoveryTokenId,
+                    liquidity: liquidity,
+                    amount0Min: 0,
+                    amount1Min: 0,
+                    deadline: block.timestamp
+                })
+            );
+
+            // burn
+            // nonfungiblePositionManager.burn(floorTokenId);
+        }
+
+        uint256 wethBalance = IERC20(weth).balanceOf(address(this));
+
+        INonfungiblePositionManager.MintParams memory params = INonfungiblePositionManager.MintParams({
+            token0: weth,
+            token1: usdc,
+            fee: feeTier,
+            tickLower: discoveryLowerTick,
+            tickUpper: discoveryUpperTick,
+            amount0Desired: wethBalance,
+            amount1Desired: 0,
+            amount0Min: 0,
+            amount1Min: 0,
+            recipient: address(this),
+            deadline: block.timestamp
+        });
+        IERC20(weth).approve(address(nonfungiblePositionManager), wethBalance);
+        (uint256 tokenId,,,) = nonfungiblePositionManager.mint(params);
+
+        discoveryTokenId = tokenId;
     }
 }

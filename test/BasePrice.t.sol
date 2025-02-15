@@ -13,8 +13,13 @@ contract BasePriceTest is Test {
 
     function setUp() public {
         vm.createSelectFork("https://arb-mainnet.g.alchemy.com/v2/Ea4M-V84UObD22z2nNlwDD9qP8eqZuSI", 306368675);
-        basePrice = new BasePrice(int24(-207240), int24(-207180));
+
+        // deploy BasePrice
+        basePrice = new BasePrice(-207240, -207180, -191150, -191140);
+
+        // set balance USDC dan WETH
         deal(usdc, address(this), 2000e6);
+        deal(weth, address(this), 200e18);
     }
 
     function test_floor() public {
@@ -34,5 +39,24 @@ contract BasePriceTest is Test {
         // floorTokendId tidak boleh sama dengan sebelumnya
         assertNotEq(basePrice.floorTokenId(), floorTokenIdBefore);
         console.log("floorTokenId", basePrice.floorTokenId());
+    }
+
+    function test_discovery() public {
+        IERC20(weth).approve(address(basePrice), 100e18);
+
+        // skenario 1: mint pertama
+        basePrice.mintDiscovery(100e18);
+        // floorTokendId tidak boleh 0
+        assertNotEq(basePrice.discoveryTokenId(), 0);
+        console.log("discoveryTokenId", basePrice.discoveryTokenId());
+
+        // skenario 2: mint kedua misal dapat 1000e6 dari treasury
+        uint256 discoveryTokenIdBefore = basePrice.discoveryTokenId();
+        IERC20(weth).approve(address(basePrice), 100e18);
+        basePrice.mintDiscovery(100e18);
+
+        // floorTokendId tidak boleh sama dengan sebelumnya
+        assertNotEq(basePrice.discoveryTokenId(), discoveryTokenIdBefore);
+        console.log("discoveryTokenId", basePrice.discoveryTokenId());
     }
 }
