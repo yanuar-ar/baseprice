@@ -94,36 +94,30 @@ contract BasePrice {
 
         if (currentTick < triggerTick) revert NotEnoughPriceChange(currentTick, triggerTick);
 
-        // [1] Anchor and Discovery : collect fee and deposit to floor
-        _collectFeeAndDepositToFloor(anchorTokenId);
-        _collectFeeAndDepositToFloor(discoveryTokenId);
+        // [1] Anchor and Discovery : collect fee as surplus
+        (, uint256 collectedAmount1Anchor) = _collect(anchorTokenId);
+        (, uint256 collectedAmount1Discovery) = _collect(discoveryTokenId);
 
         // [2] Anchor : empty liquidity
-        (, uint256 amount1) = _emptyLiquidity(anchorTokenId);
+        (, uint256 liquidityAmount1Anchor) = _emptyLiquidity(anchorTokenId);
 
-        // [3] Anchor surplus to Floor
-        // cant further more than discoveryTickUpper
+        // [3] Anchor : calculate surplus
+        // can't further more than discoveryTickUpper
         if (currentTick > discoveryTickUpper) currentTick = discoveryTickUpper;
-        uint24 furtherTick = uint24(currentTick) - uint24(discoveryTickLower); // skipped tick
+        uint24 furtherTick = uint24(currentTick) - uint24(discoveryTickLower); // skipped tick from discoveryTickLower
         uint24 anchorTickLength = uint24(anchorTickUpper - anchorTickLower);
-        uint256 anchorLiquiditySurplus = amount1 * uint256(uint24(furtherTick)) / anchorTickLength;
+        uint256 anchorLiquiditySurplus = liquidityAmount1Anchor * uint256(uint24(furtherTick)) / anchorTickLength;
 
-        // increase Floor liquidity
-        _increaseLiquidity(floorTokenId, 0, anchorLiquiditySurplus);
+        // [4] Increase Floor liquidity with surplus
+        uint256 totalSurplus = collectedAmount1Anchor + collectedAmount1Discovery + anchorLiquiditySurplus;
+        _increaseLiquidity(floorTokenId, 0, totalSurplus);
 
-        // [4] Discovery : empty liquidity]
-        (, amount1) = _emptyLiquidity(discoveryTokenId);
-
-        // [5] Discovery surplus to Floor
-        // calculate Discovery surplus
-        uint24 discoveryTickLength = uint24(discoveryTickUpper) - uint24(discoveryTickLower);
-        uint256 discoveryLiquiditySurplus = amount1 * uint256(uint24(furtherTick)) / discoveryTickLength;
-
-        _increaseLiquidity(floorTokenId, 0, discoveryLiquiditySurplus);
+        // [5] Discovery : empty liquidity
+        _emptyLiquidity(discoveryTokenId);
 
         // [6] mint Anchor and Discovery
-        uint256 anchorAmount = IERC20(token1).balanceOf(address(this));
-        _mintAnchorAndDiscovery(anchorAmount);
+        uint256 token1Balance = IERC20(token1).balanceOf(address(this));
+        _mintAnchorAndDiscovery(token1Balance);
 
         // [7make zero approve
         IERC20(token0).approve(address(nonfungiblePositionManager), 0);
@@ -227,15 +221,12 @@ contract BasePrice {
         BaseToken(token0).burn(IERC20(baseToken).balanceOf(address(this)));
     }
 
-    function _collectFeeAndDepositToFloor(uint256 tokenId) internal {
-        (uint256 amount0, uint256 amount1) = _collect(tokenId);
-        _increaseLiquidity(floorTokenId, 0, amount1);
-    }
-
     function _emptyLiquidity(uint256 tokenId) internal returns (uint256 amount0, uint256 amount1) {
         (,,,,,,, uint128 liquidity,,,,) = nonfungiblePositionManager.positions(tokenId);
         (amount0, amount1) = _decreaseLiquidity(tokenId, liquidity);
         _collect(tokenId);
+        // burn position
+        nonfungiblePositionManager.burn(tokenId);
     }
 
     function _increaseLiquidity(uint256 tokenId, uint256 amount0Desired, uint256 amount1Desired) internal {
