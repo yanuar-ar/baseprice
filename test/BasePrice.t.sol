@@ -92,4 +92,69 @@ contract BasePriceTest is Test {
         console.log("after discoveryTickLower", basePrice.discoveryTickLower());
         console.log("after discoveryTickUpper", basePrice.discoveryTickUpper());
     }
+
+    function test_slide() public {
+        console.log("before getCurrentTick", basePrice.getCurrentTick());
+        console.log("before anchorTickLower", basePrice.anchorTickLower());
+        console.log("before anchorTickUpper", basePrice.anchorTickUpper());
+
+        vm.prank(address(basePrice));
+        baseToken.mint(address(this), 100e18);
+        ISwapRouter.ExactInputSingleParams memory params = ISwapRouter.ExactInputSingleParams({
+            tokenIn: address(baseToken),
+            tokenOut: address(usdc),
+            fee: 3000,
+            recipient: address(this),
+            deadline: block.timestamp,
+            amountIn: 100e18,
+            amountOutMinimum: 0,
+            sqrtPriceLimitX96: 0
+        });
+
+        IERC20(baseToken).approve(address(swapRouter), 100e18);
+        swapRouter.exactInputSingle(params);
+
+        console.log("trigger tick", basePrice.snapshotMarketTick() - basePrice.ANCHOR_TRIGGERED_TICK_LENGTH());
+
+        assertLt(basePrice.getCurrentTick(), basePrice.snapshotMarketTick() - basePrice.ANCHOR_TRIGGERED_TICK_LENGTH());
+
+        basePrice.slide();
+
+        console.log("after getCurrentTick", basePrice.getCurrentTick());
+
+        console.log("after anchorTickLower", basePrice.anchorTickLower());
+        console.log("after anchorTickUpper", basePrice.anchorTickUpper());
+    }
+
+    function test_drop() public {
+        console.log("before getCurrentTick", basePrice.getCurrentTick());
+        console.log("before discoveryTickLower", basePrice.discoveryTickLower());
+        console.log("before discoveryTickUpper", basePrice.discoveryTickUpper());
+
+        vm.prank(address(basePrice));
+        baseToken.mint(address(this), 100e18);
+        ISwapRouter.ExactInputSingleParams memory params = ISwapRouter.ExactInputSingleParams({
+            tokenIn: address(baseToken),
+            tokenOut: address(usdc),
+            fee: 3000,
+            recipient: address(this),
+            deadline: block.timestamp,
+            amountIn: 100e18,
+            amountOutMinimum: 0,
+            sqrtPriceLimitX96: 0
+        });
+
+        IERC20(baseToken).approve(address(swapRouter), 100e18);
+        swapRouter.exactInputSingle(params);
+
+        console.log("trigger tick", basePrice.discoveryTickLower() - basePrice.DROP_TRIGGERED_TICK_LENGTH());
+        assertLt(basePrice.getCurrentTick(), basePrice.discoveryTickLower() - basePrice.DROP_TRIGGERED_TICK_LENGTH());
+
+        basePrice.slide();
+        basePrice.drop();
+
+        console.log("after getCurrentTick", basePrice.getCurrentTick());
+        console.log("after discoveryTickLower", basePrice.discoveryTickLower());
+        console.log("after discoveryTickUpper", basePrice.discoveryTickUpper());
+    }
 }

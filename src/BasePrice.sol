@@ -13,9 +13,14 @@ import {TickMath} from "./libraries/TickMath.sol";
 contract BasePrice {
     using SafeERC20 for IERC20;
 
-    error NotEnoughPriceChange(int24 currentTick, int24 triggerTick);
+    event MintAnchor(uint256 anchorTokenId, int24 anchorTickLower, int24 anchorTickUpper);
+    event MintDiscovery(uint256 discoveryTokenId, int24 discoveryTickLower, int24 discoveryTickUpper);
+    event MintFloor(uint256 floorTokenId, int24 floorTickLower, int24 floorTickUpper);
 
+    error NotEnoughPriceChange(int24 currentTick, int24 triggerTick);
+    error AnchorAndDiscoveryOverlap(int24 anchorTickUpper, int24 discoveryTickLower);
     // uniswap v3
+
     INonfungiblePositionManager public immutable nonfungiblePositionManager;
 
     // positions
@@ -34,11 +39,16 @@ contract BasePrice {
     uint256 public anchorTokenId;
     int24 public anchorTickLower;
     int24 public anchorTickUpper;
+    int24 public immutable ANCHOR_TRIGGERED_TICK_LENGTH;
 
     uint256 public discoveryTokenId;
     int24 public discoveryTickLower;
     int24 public discoveryTickUpper;
     int24 public immutable DISCOVERY_TRIGGERED_TICK_LENGTH;
+
+    // strategy
+    uint256 public lastDropTimestamp;
+    int24 public immutable DROP_TRIGGERED_TICK_LENGTH;
 
     // pool configs
     address public pool;
@@ -64,6 +74,8 @@ contract BasePrice {
         DISCOVERY_TOKEN_PER_TICK = 100e18;
 
         DISCOVERY_TRIGGERED_TICK_LENGTH = 240; // 2,4%
+        ANCHOR_TRIGGERED_TICK_LENGTH = 200; // 2%
+        DROP_TRIGGERED_TICK_LENGTH = 2000; // 20%
     }
 
     function initPoolAndPosition(uint160 sqrtPriceX96, int24 floorTick, uint256 floorAmount, uint256 anchorAmount)
@@ -124,6 +136,40 @@ contract BasePrice {
         IERC20(token1).approve(address(nonfungiblePositionManager), 0);
     }
 
+    function slide() external {
+        (, int24 currentTick,,,,,) = IUniswapV3Pool(pool).slot0();
+        int24 triggerTick = snapshotMarketTick - ANCHOR_TRIGGERED_TICK_LENGTH;
+        if (currentTick >= triggerTick) revert NotEnoughPriceChange(currentTick, triggerTick);
+
+        // [1] Anchor : empty liquidity
+        _emptyLiquidity(anchorTokenId);
+
+        // [2] Anchor : calculate surplus
+        uint256 token1Balance = IERC20(token1).balanceOf(address(this));
+        _mintAnchor(token1Balance);
+
+        // [3] make zero approve
+        IERC20(token0).approve(address(nonfungiblePositionManager), 0);
+        IERC20(token1).approve(address(nonfungiblePositionManager), 0);
+    }
+
+    function drop() external {
+        (, int24 currentTick,,,,,) = IUniswapV3Pool(pool).slot0();
+        int24 triggerTick = discoveryTickLower - DROP_TRIGGERED_TICK_LENGTH;
+        if (currentTick >= triggerTick) revert NotEnoughPriceChange(currentTick, triggerTick);
+
+        // [1] Discovery : empty liquidity
+        _emptyLiquidity(discoveryTokenId);
+
+        // [2] Discovery : calculate surplus
+        _mintDiscovery();
+
+        // [3] Anchor and Discovery : check overlap
+        // if (discoveryTickLower <= anchorTickUpper) {
+        //     revert AnchorAndDiscoveryOverlap(anchorTickUpper, discoveryTickLower);
+        // }
+    }
+
     ///////////////////////////////////////////////////////////////////////////////////////////////
     //                                     Read Functions                                        //
     ///////////////////////////////////////////////////////////////////////////////////////////////
@@ -136,6 +182,11 @@ contract BasePrice {
     ///////////////////////////////////////////////////////////////////////////////////////////////
     //                                   Internal Functions                                      //
     ///////////////////////////////////////////////////////////////////////////////////////////////
+
+    function _mintAnchorAndDiscovery(uint256 anchorAmount) internal {
+        _mintAnchor(anchorAmount);
+        _mintDiscovery();
+    }
 
     function _mintFloor(uint256 floorAmount, int24 floorTick) internal {
         floorTickLower = floorTick;
@@ -159,10 +210,11 @@ contract BasePrice {
         initialFloorAmount = floorAmount;
         IERC20(token1).approve(address(nonfungiblePositionManager), floorAmount);
         (floorTokenId,,,) = nonfungiblePositionManager.mint(floorMintParams);
+
+        emit MintFloor(floorTokenId, floorTickLower, floorTickUpper);
     }
 
-    function _mintAnchorAndDiscovery(uint256 anchorAmount) internal {
-        // anchor position
+    function _mintAnchor(uint256 anchorAmount) internal {
         // max mint
         uint256 maxMint = type(uint128).max - IERC20(token0).totalSupply();
         BaseToken(token0).mint(address(this), maxMint);
@@ -185,7 +237,7 @@ contract BasePrice {
             amount0Desired: IERC20(token0).balanceOf(address(this)),
             amount1Desired: anchorAmount,
             amount0Min: 0,
-            amount1Min: anchorAmount,
+            amount1Min: 0,
             recipient: address(this),
             deadline: block.timestamp
         });
@@ -194,12 +246,17 @@ contract BasePrice {
         IERC20(token1).approve(address(nonfungiblePositionManager), anchorAmount);
         (anchorTokenId,,,) = nonfungiblePositionManager.mint(mintAnchorParams);
 
-        // discovery position
+        BaseToken(token0).burn(IERC20(baseToken).balanceOf(address(this)));
 
+        emit MintAnchor(anchorTokenId, anchorTickLower, anchorTickUpper);
+    }
+
+    function _mintDiscovery() internal {
         discoveryTickLower = anchorTickUpper;
         discoveryTickUpper = discoveryTickLower + (DISCOVERY_LENGTH * TICK_SPACING);
 
         uint256 discoveryAmount = uint256(uint24(DISCOVERY_LENGTH)) * DISCOVERY_TOKEN_PER_TICK;
+        uint256 mustMintedAmount = discoveryAmount - IERC20(token0).balanceOf(address(this));
 
         INonfungiblePositionManager.MintParams memory mintDiscoveryParams = INonfungiblePositionManager.MintParams({
             token0: token0,
@@ -215,10 +272,12 @@ contract BasePrice {
             deadline: block.timestamp
         });
 
+        BaseToken(token0).mint(address(this), mustMintedAmount);
         IERC20(token0).approve(address(nonfungiblePositionManager), discoveryAmount);
         (discoveryTokenId,,,) = nonfungiblePositionManager.mint(mintDiscoveryParams);
-
         BaseToken(token0).burn(IERC20(baseToken).balanceOf(address(this)));
+
+        emit MintDiscovery(discoveryTokenId, discoveryTickLower, discoveryTickUpper);
     }
 
     function _emptyLiquidity(uint256 tokenId) internal returns (uint256 amount0, uint256 amount1) {
@@ -230,6 +289,7 @@ contract BasePrice {
     }
 
     function _increaseLiquidity(uint256 tokenId, uint256 amount0Desired, uint256 amount1Desired) internal {
+        IERC20(token1).approve(address(nonfungiblePositionManager), amount0Desired);
         IERC20(token1).approve(address(nonfungiblePositionManager), amount1Desired);
         nonfungiblePositionManager.increaseLiquidity(
             INonfungiblePositionManager.IncreaseLiquidityParams({
